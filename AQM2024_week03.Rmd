@@ -1,0 +1,764 @@
+---
+title: "AQM Week 03 -- OLS II: Robust Standard errors & Probability Theory"
+author: 
+  - "Oliver Rittmann"
+date: "February 29, 2024"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    css: css/lab.css
+    code_folding: show
+  pdf_document:
+    toc: yes
+  html_notebook:
+    toc: true
+    toc_float: true
+    css: css/lab.css
+---
+
+```{r setup}
+# The first line sets an option for the final document that can be produced from
+# the .Rmd file. Don't worry about it.
+knitr::opts_chunk$set(echo = TRUE)
+
+# The next bit is quite powerful and useful. 
+# First you define which packages you need for your analysis and assign it to 
+# the p_needed object. 
+p_needed <-
+  c("viridis", "knitr", "sandwich")
+
+# Now you check which packages are already installed on your computer.
+# The function installed.packages() returns a vector with all the installed 
+# packages.
+packages <- rownames(installed.packages())
+# Then you check which of the packages you need are not installed on your 
+# computer yet. Essentially you compare the vector p_needed with the vector
+# packages. The result of this comparison is assigned to p_to_install.
+p_to_install <- p_needed[!(p_needed %in% packages)]
+# If at least one element is in p_to_install you then install those missing
+# packages.
+if (length(p_to_install) > 0) {
+  install.packages(p_to_install)
+}
+# Now that all packages are installed on the computer, you can load them for
+# this project. Additionally the expression returns whether the packages were
+# successfully loaded.
+sapply(p_needed, require, character.only = TRUE)
+
+
+# We all start with the same my_ols function from the last lab session (with one slight change in the output)
+
+my_ols <- function(X, y) {
+  b_hat <- solve(t(X) %*% X) %*% t(X) %*% y
+  
+  # Residuals
+  e <- y - X %*% b_hat
+  
+  # Variance Estimates
+  n <- nrow(X)
+  k <- ncol(X)
+  sigma_sq <- t(e) %*% e / (n - k) # constant is already in
+  sigma_sq <- as.numeric(sigma_sq)
+  
+  # Variance Covariance matrix
+  var_cov <- sigma_sq * solve(t(X) %*% X)
+  
+  # Standard Errors
+  std_err <- sqrt(diag(var_cov))
+  
+  output <- list(estimates = cbind(b_hat, std_err), residuals = e)
+  
+  return(output)
+}
+```
+
+------------------------------------------------------------------------
+
+## Program for today
+
+In this session, we have three things on our agenda:
+
+1.  Revisit the Gauss-Markov Assumptions
+
+2.  Learn how we can fix standard errors for heteroscedastic error variances.
+
+3.  Probability Theory.
+
+    1.  Exploring the Beta distribution.
+
+------------------------------------------------------------------------
+
+## The Gauss-Markov Assumptions
+
+We have discussed the Gauss-Markov Theorem and its corresponding assumptions. The theorem states that the OLS estimator is the **B**est **L**inear **U**nbiased **E**stimator (**BLUE**) if four assumptions are satisfied. These are:
+
+1.  Linearity: $y = X\beta + \epsilon$
+2.  No perfect collinearity: $X$ has full rank
+3.  Zero conditional mean: $E[\epsilon | X]=0$
+4.  Homoskedasticity and uncorrelated errors: $Var(\epsilon | X) = E[\epsilon \epsilon' | X] = \sigma^2 I_n = \begin{pmatrix}      \sigma^2 & 0 & \cdots & 0 \\      0 & \sigma^2 & \cdots & 0 \\      \vdots & \vdots & \ddots & \vdots \\      0 & 0 & \cdots & \sigma^2 \\\end{pmatrix}$
+
+$$
+\begin{aligned}
+E[\hat{\beta}_{OLS}|X]  & = E[(X'X)^{-1}X'y|X]                     & \text{(2) $(X'X)^{-1}$ exists}   \\
+                        & = E[(X'X)^{-1}X'(X\beta + \epsilon)|X]   & \text{(1) Linearity}            \\
+                              & = E[\beta + (X'X)^{-1}X'\epsilon|X]                                         \\
+                              & = \beta + E[(X'X)^{-1}X'|X]E[\epsilon|X] & \text{(3) zero conditional mean}  \\
+                              &= \beta.
+\end{aligned}
+$$
+
+Last week we talked about violations of the multicollinearity (2), zero conditional mean (3) and uncorrelated errors (4) assumption.
+
+Today we will have a look at one solution to situations when the homoskedasticity assumption (also covered by assumption 4) is violated. Note that this is not the only solution approach and we will cover other approaches later in the semester.
+
+Assumption 4 does not appear in the derivation of the unbiasedness of $\hat\beta_{OLS}$, so why is it important? It matters for standard errors! We will see below why this is the case. But let's first have look at what we mean by homoskedasticity and heteroskedasticity.
+
+The homoscedasticity assumption is necessary for the Gauss-Markov Theorem to hold. It ensures that the OLS estimator is the BLUE. Unfortunately, the assumption is quite strong and rarely fulfilled. Let's explore what happens if the assumption of Homoskedasticity fails to hold.
+
+```{r Heteroscedasticity}
+set.seed(1234) # What is this?
+
+n <- 500
+# we draw the independent variable from a so-called beta-distribution
+# -> more on this at the end of the lab
+X <- cbind(rep(1, n), rbeta(n, 2, 6))
+beta <- rnorm(2)
+
+### Homoskedastic Data ###
+e_hom <- rnorm(n = n,
+               mean = 0,
+               sd = 1) # homoskadistic errors
+y_hom <- beta[1] + beta[2] * X[, 2] + e_hom
+
+
+### Heteroskedastic Data ###
+e_het <- rnorm(n = n,
+               mean = 0, 
+               sd = X[, 2]) # **Now the variance depends on x!**
+y_het <- beta[1] + beta[2] * X[, 2] + e_het
+
+# Residuals
+
+res_hom <- my_ols(X, y_hom)$residuals
+res_het <- my_ols(X, y_het)$residuals
+
+# Plots
+par(mfrow = c(1, 2))
+
+plot(
+  X[, 2],
+  res_hom,
+  main = "Homoskedasticity",
+  ylab = "Residuals y ~ x",
+  xlab = "x",
+  pch = 20,
+  bty = "n",
+  las = 1,
+  col = viridis(1, 0.8)
+)
+abline(h = 0)
+
+plot(
+  X[, 2],
+  res_het,
+  main = "Heteroskedasticity",
+  ylab = "Residuals y ~ x",
+  xlab = "x",
+  pch = 20,
+  bty = "n",
+  las = 1,
+  col = viridis(1, 0.8)
+)
+abline(h = 0)
+```
+
+The second plot shows that the assumption that $Var(\epsilon | X) = E[\epsilon \epsilon' | X] = \sigma^2 I_n$ does not hold, since the variance of the residuals depends on $x$. The larger $x$, the bigger the residuals. In effect, the estimation of the standard errors will be problematic since we are able to predict $y$ for some values of $x$ better than for others.
+
+The picture above is the textbook example of heteroskedasticity. Here is a second set of data where heteroskedasticity is apparent too. This time, the independent variable *X* is just a binary indicator. This example will give us an easier time understanding why heteroskedasticity may be a problem.
+
+```{r binary heteroscedasticity}
+set.seed(1234)
+n <- 1000
+pop <- data.frame("x" = rbinom(n, 1, 0.35))
+beta <- 1.5
+sigma <- ifelse(pop$x == 1, 4, 0.5)
+pop$y <- 0 + beta * pop$x + rnorm(n, 0, sigma)
+
+
+plot(x = jitter(pop$x),
+     y = pop$y,
+     pch = 19,
+     col = viridis(1, 0.5),
+     xlab = "x",
+     ylab = "y",
+     xaxt = "n",
+     main = "Heteroskedasticity with binary IV",
+     las = 1)
+axis(1, 
+     at = c(0, 1))
+```
+
+### How homoskedasticity matters for standard errors
+
+In the lecture, we derived a general form for the variance of $\hat{\beta}_{OLS}$:
+
+$$
+\begin{aligned}
+    Var(\hat{\beta}_{OLS} | X) & = (X'X)^{-1}X' E[\epsilon \epsilon'] X(X'X)^{-1} \\
+                               & = (X'X)^{-1}X' \Omega                X(X'X)^{-1} 
+\end{aligned}
+$$
+
+Only by assumption 4 (the homoskedasticity & uncorrelated errors assumption), we can replace $\Omega$ (which is a placeholder for $E[ϵϵ']$, i.e. the expectation of the covariance matrix of the error term) with $\sigma^2 I_n$. This gives us:
+
+$$
+\begin{aligned}
+    Var(\hat{\beta}_{OLS} | X) &= (X'X)^{-1}X' \sigma^2 I_n X(X'X)^{-1} \\
+    &= (X'X)^{-1}X' 
+        \begin{pmatrix}
+      \sigma^2 & 0 & \cdots & 0 \\
+      0 & \sigma^2 & \cdots & 0 \\
+      \vdots & \vdots & \ddots & \vdots \\
+      0 & 0 & \cdots & \sigma^2 \\
+\end{pmatrix} X(X'X)^{-1}
+\end{aligned}
+$$
+
+$\sigma^2 I_n$ comprises the homoskedasticity assumption, because we have $\sigma^2$ on the diagonal, i.e. we assume a constant error variance for all observations. However, as we can see in the left plot above, this assumption might be violated. So what can we do in such situations?
+
+### Why is it problem
+
+The math shows us that we need homoskedasticity for our standard errors to be correct. But it can be hard to understand *why* homoskedasticity is important for correct standard errors only from looking at formulas. To build a better intuition, let's look at the data from above again:
+
+```{r}
+plot(x = jitter(pop$x),
+     y = pop$y,
+     pch = 19,
+     col = viridis(1, 0.5),
+     xlab = "x",
+     ylab = "y",
+     xaxt = "n",
+     main = "Heteroskedasticity with binary IV",
+     las = 1)
+axis(1, 
+     at = c(0, 1))
+```
+
+Remember: Standard Errors are about sampling uncertainty. If we repeatedly draw samples from the population and for each sample fit a regression of Y on X, then the regression estimates of $\beta$ will differ from sample to sample.
+
+Let's treat the data above as our population and draw six samples from it. For each sample, we fit the regression and plot the regression line for each draw:
+
+```{r}
+set.seed(1234)
+s1 <- pop[sample(n, 50),]
+s2 <- pop[sample(n, 50),]
+s3 <- pop[sample(n, 50),]
+s4 <- pop[sample(n, 50),]
+s5 <- pop[sample(n, 50),]
+s6 <- pop[sample(n, 50),]
+
+lm1 <- lm(y ~ x, data = s1)
+lm2 <- lm(y ~ x, data = s2)
+lm3 <- lm(y ~ x, data = s3)
+lm4 <- lm(y ~ x, data = s4)
+lm5 <- lm(y ~ x, data = s5)
+lm6 <- lm(y ~ x, data = s6)
+
+
+plot_regression <- function(model, sample){
+  plot(x = jitter(pop$x),
+       y = pop$y,
+       pch = 19,
+       col = viridis(3, 0.1)[1],
+       xlab = "x",
+       ylab = "y",
+       xaxt = "n",
+       las = 1)
+  axis(1, at = c(0,1))
+  points(x = jitter(sample$x),
+         y = sample$y,
+         col = viridis(3, 0.8)[3],
+         pch = 19)
+  abline(model, 
+         lwd = 2,
+         col = viridis(3)[2])
+}
+
+par(mfrow = c(2, 3))
+
+plot_regression(model = lm1, sample = s1)
+plot_regression(model = lm2, sample = s2)
+plot_regression(model = lm3, sample = s3)
+plot_regression(model = lm4, sample = s4)
+plot_regression(model = lm5, sample = s5)
+plot_regression(model = lm6, sample = s6)
+
+```
+
+Sampling uncertainty as captured by standard errors refers to the fact that for each sample we are estimating different intercept and slope coefficients.
+
+Let's do this many more times:
+
+```{r}
+set.seed(1234)
+n_samples <- 1000
+coefs <- data.frame(b0 = rep(NA, n_samples),
+                    b1 = NA,
+                    se_b1 = NA)
+
+for (i in 1:n_samples) {
+  s <- pop[sample(n, 50),]
+  model <- lm(y ~ x, data = s)
+  coefs$b0[i] <- coef(model)[1]
+  coefs$b1[i] <- coef(model)[2]
+  coefs$se_b1[i] <- summary(model)$coef["x", "Std. Error"]
+  coefs$r_se_b1[i] <- sqrt(diag(vcovHC(model, type = "HC0")))[2]
+}
+
+
+par(mfrow = c(1, 2))
+
+plot(x = jitter(pop$x),
+     y = pop$y,
+     pch = 19,
+     col = viridis(3, 0.1)[1],
+     xlab = "x",
+     ylab = "y",
+     xaxt = "n",
+     las = 1)
+axis(1, at = c(0,1))
+for (i in 1:n_samples) {
+  abline(a = coefs$b0[i],
+         b = coefs$b1[i],
+         col = viridis(3, 0.25)[2])
+}
+
+hist(coefs$b1,
+     breaks = 20,
+     border = F,
+     col = viridis(1, 0.5),
+     main = expression(paste("Sampling Distribution of ", beta[1])),
+     yaxt = "n",
+     ylab = "",
+     xlab = expression(beta[1]))
+
+
+
+```
+
+To see why heteroskedasticity is related to the uncertainty in the estimation of $\beta$, ask yourself the following question: Which points contribute more to the varying slopes between samples, those at $x=0$, or those at $x=1$?
+
+The answer is: Those data points with a higher error variance (here those are the points at $x=1$) have a larger contribution to sampling variance of $\beta$ coefficients than the data points with a lower error variance (points at $x=0$). Yet, if we calculate conventional standard errors, then we are assuming that the error variance is constant and thus that all points contribute to sampling variance equally. This can lead to inaccurate standard errors.
+
+## Robust (heteroskedasticity-consistent) Standard Errors
+
+There are several strategies to deal with heteroskedasticity. One cool strategy--to *model* the variance--will be the subject of a future session when we have introduced maximum likelihood.
+
+Today, we concentrate on a different strategy, which is to use a statistical fix, producing so-called *robust standard errors*.
+
+We already discussed that assumption (4) can be false (e.g. in the example above). Robust Standard Errors relax the assumption. When we calculate them, we replace $\Omega$ with a different matrix:
+
+$$
+  \Omega = diag(\epsilon \epsilon') 
+$$
+
+Since we usually do not observe $\Omega$ directly, we need to estimate it. Because $e$ is an estimate of $\epsilon$, by analogy we get
+
+$$
+  \hat{\Omega} = diag(ee')
+$$
+
+Replacing $\Omega$ with $\hat{\Omega}$, we get
+
+$$
+\begin{aligned}
+    \hat{Var}(\hat{\beta}_{OLS} | X) & = (X'X)^{-1}X'\hat{\Omega}X(X'X)^{-1} \\
+    & = (X'X)^{-1}X'
+        \begin{pmatrix}
+      e_{1}^2 & 0 & \cdots & 0 \\
+      0 & e_{2}^2 & \cdots & 0 \\
+      \vdots & \vdots & \ddots & \vdots \\
+      0 & 0 & \cdots & e_{n}^2 
+      \end{pmatrix} 
+      X(X'X)^{-1}
+\end{aligned}
+$$
+
+This equation is often called the "Sandwich" estimator due to its visual appearance: $(X'X)^{-1}$ is the bread, $X'\hat{\Omega}X$ the butter or the meat. **Bread + Butter + Bread = Sandwich**!
+
+$$
+\hat{Var}(\hat{\beta}_{OLS} | X)  = 
+  \underbrace{\underbrace{(X'X)^{-1}}_{\text{Bread}}
+              \underbrace{X'\hat{\Omega}X}_{\text{Butter}}
+              \underbrace{(X'X)^{-1}}_{\text{Bread}}}_{\text{Sandwich}}
+$$
+
+With this information, let's estimate robust (or heteroskedastic-consistent) standard errors.
+
+```{r Implementing Robust Standard Errors}
+X <- cbind(1, pop$x)
+
+# The Bread
+bread <- solve(t(X) %*% X)
+
+# The Butter
+e <- residuals(lm(y ~ x, data = pop))
+omega_hat <- diag(diag(e %*% t(e))) 
+butter <- t(X) %*% omega_hat %*% X
+
+
+# The Sandwich
+rob_var_cov <- bread %*% butter %*% bread
+robust_std_err <- sqrt(diag(rob_var_cov))
+robust_std_err 
+```
+
+There is a package called `sandwich` that allows you calculate heteroskedastic-consistent standard errors. Maybe you have seen robust standard errors in `STATA` before. The command there is `reg y x, robust` and because of its frequent use **"reg y x, robust"** has almost become a proverb. But now you know what's going on there!
+
+Let's use the `sandwich` package and check whether our home-made sandwich was good.
+
+```{r Checking whether our sandwich is good}
+library(sandwich)
+
+# Regression Model
+
+m1 <- lm(y ~ x, data = pop)
+
+# Robust Variance Covariance Matrix
+# The vcovHC() function comes from the sandwich package
+rob_var_cov2 <- vcovHC(m1, type = "HC0")
+
+# Robust Standard Errors
+robust_std_err2 <- sqrt(diag(rob_var_cov2))
+robust_std_err2
+```
+
+Yay, all is well!
+
+Let's see how our robust standard errors differ from the normal standard errors.
+
+```{r Comparing robust and normal standard errors}
+norm_std_err <- my_ols(X, pop$y)$estimates[, 2]
+
+output <- cbind(robust_std_err, norm_std_err)
+colnames(output) <- c("Robust", "Normal")
+rownames(output) <- c("Intercept", "Var 1")
+
+
+cat("Robust vs. Normal Standard Errors", "\n")
+output
+```
+
+And which one is correct? We again draw samples from the data. This time, for each sample we do not only fit the regression, but also calculate robust standard errors.
+
+```{r}
+# repeat the exercise from above, but this time compute
+# heteroskedasticity robust standard errors
+
+set.seed(1234)
+n_samples <- 1000
+coefs <- data.frame(b0 = rep(NA, n_samples),
+                    b1 = NA,
+                    se_b1 = NA)
+
+for (i in 1:n_samples) {
+  s <- pop[sample(n, 50),]
+  model <- lm(y ~ x, data = s)
+  coefs$b0[i] <- coef(model)[1]
+  coefs$b1[i] <- coef(model)[2]
+  coefs$se_b1[i] <- summary(model)$coef["x", "Std. Error"]
+  coefs$r_se_b1[i] <- sqrt(diag(vcovHC(model, type = "HC0")))[2]
+}
+
+# plot the result
+
+par(mfrow = c(1, 2),
+    mar = c(5, 4, 5, 2) + 0.1)
+
+hist(coefs$se_b1,
+     breaks = 20,
+     border = F,
+     col = viridis(1, 0.5),
+     main = expression(paste("Distribution of\nthe Standard Error of ", beta[1])),
+     yaxt = "n",
+     ylab = "",
+     xlab = "Homoskedastic SE",
+     xlim = c(0.3, 2))
+abline(v = sd(coefs$b1),
+       col = viridis(2)[2],
+       lwd = 3)
+
+hist(coefs$r_se_b1,
+     breaks = 20,
+     border = F,
+     col = viridis(1, 0.5),
+     main = expression(paste("Heteroskedasticity-consistent\nStandard Error of", beta[1])),
+     yaxt = "n",
+     ylab = "",
+     xlab = "Heteroskedasticity-consistent SE",
+     xlim = c(0.3, 2))
+abline(v = sd(coefs$b1),
+       col = viridis(2)[2],
+       lwd = 3)
+
+```
+
+The vertical yellow line is the standard deviation of the beta coefficients from repeated samples, i.e. the true standard error. We can clearly see that the heteroskedasticity robust standard errors are more accurate while the conventional standard errors underestimate the uncertainty.
+
+## Robust Standard Errors: The Debate
+
+When should we use robust standard errors? This question will be answered differently by different statisticians or econometricians. All agree, however, that robust standard errors are helpful in one or the other way.
+
+The econometricians Angrist and Pischke argue in their book 'Mostly Harmless Econometrics' that one should always report robust standard errors. Since the assumption of homoskedasticity almost always fails to hold, this seems like good advice. Especially, since robust standard errors are generally larger than their non-robust counterparts, reporting robust standard errors is a way to be conservative.
+
+Others, for example statistician David Freedman, argue that robust standard errors are not really fixing the problem. Instead, if heteroskedasticity is present, it is likely that the model is misspecified. But if it is misspecified, point estimates are likely to be biased as well and robust standard errors are not at all helping with that. Instead, if normal standard errors and robust standard errors differ, we should be alarmed that our model may not be a good one.
+
+Similarly, Gary King and Margaret E. Roberts make the same argument in their 2015 paper with the title *How Robust Standard Errors Expose Methodological Problems They Do not Fix*.
+
+More on that in the homework.
+
+------------------------------------------------------------------------
+
+## Probability Theory
+
+So far, for the OLS case we assumed that our data $Y$ is a random variable that is normally distributed with mean $\mu$ and variance $\sigma^2$, so we can write: $Y \sim \mathcal{N}(\mu, \sigma^2)$. Where our systematic component is given by $\mu = X\beta$.
+
+To move beyond the linear model, thus, we need to understand the underlying data generating process (DGP) that generates our $Y$. Generally, we want to pick a probability distribution to define the stochastic component of your model that best describes the DGP (i.e. the potential values of your outcome variable).
+
+In the lecture we looked at many different probability distributions. Most of which (hopefully) sounded familiar to you.
+
+### The Birthday Problem
+
+Analytical solutions to probability questions can be quite involved. But, we have a cool tool--simulations--that can help us to understand and answer such questions.
+
+Remember the following problem from the slides: *Given a room with 24 randomly selected students, what is the probability that at least two have the same birthday?*
+
+Let's implement a simulation together.
+
+```{r}
+sims <- 1000
+students <- 24
+
+days <- seq(1, 365, 1)
+
+sameday <- 0
+
+for (i in 1:sims) {
+  room <-
+    sample(days, students, replace = TRUE)
+  if (length(unique(room)) < students) {
+    sameday <- sameday + 1
+  }
+}
+
+cat("Pr(>=2 students same birthday):", sameday / sims, "\n")
+```
+We can go one step further and check, for which number of people in the room will we get at least a 50 percent chance of people sharing a birthday.
+
+```{r}
+prob <- rep(NA, length(0:100))
+for (st in 0:100){
+  sameday <- 0
+  for (i in 1:sims) {
+  room <-
+    sample(days, st, replace = TRUE)
+  if (length(unique(room)) < st) {
+    sameday <- sameday + 1
+  }
+  }
+  prob[st] <- sameday / sims
+}
+
+plot(prob, 
+     x = 0:100, 
+     type = "l",
+     las = 1,
+     ylab = "Probability of People Sharing Birthday",
+     xlab = "Number of People in the Room")
+
+abline(h = 0.5, lty = "dotted")
+```
+
+
+### The Beta Distribution
+
+Finally, we take a look at a distribution you are probably not that familiar with.
+
+The *Beta distribution* is a continuous probability distribution defined on the interval (0,1). It is parameterized by two positive shape parameters, which are typically denoted by $\alpha$ and $\beta$. There is complicated-looking formula which needs another distribution, the gamma distribution. But actually to explore the beta distribution we simply can play around with it a bit. First, we want to find out what the two parameters do. Afterwards, you will simulate expected values and variances for a couple of different parameter settings.
+
+```{r The parameters of the Beta distribution}
+x <- seq(0, 1, by = 0.01)
+
+alpha <- 1
+beta <- 1
+
+par(mfrow = c(1, 2))
+
+# Plot the pdf
+plot(
+  x,
+  dbeta(x, alpha, beta),
+  type = "l",
+  ylab = "PDF",
+  ylim = c(0, 3),
+  las = 1,
+  bty = "n",
+  main = bquote("Beta distribution with parameters" ~
+  alpha == "1" ~ "and" ~
+  beta == "1")
+)
+
+# Plot the cdf
+plot(
+  x,
+  pbeta(x, alpha, beta),
+  type = "l",
+  ylab = "CDF",
+  las = 1,
+  bty = "n",
+  main = bquote("Beta distribution with parameters" ~
+  alpha == "1" ~ "and" ~
+  beta == "1")
+)
+
+```
+
+## Exercise: Exploring the Beta distribution
+
+Your task is to extend the above code to get the pdf and the cdf of the Beta distribution for different combinations of alpha and beta. Let's plot the following combinations:
+
+-   $\alpha = \beta = 0.5$
+
+-   $\alpha = 5, \beta = 1$
+
+-   $\alpha = 1, \beta = 3$
+
+-   $\alpha = 2, \beta = 2$
+
+-   $\alpha = 2, \beta = 5$
+
+-   Plot them in one graph for the pdf and a second graph for the cdf. Don't forget to plot the lines in different colors.
+
+-   Do you get a general idea what the parameters do?
+
+```{r Exercise: Exploring the Beta distribution}
+x <- seq(0, 1, by = 0.01)
+alpha <- c(0.5, 5, 1, 2, 2)
+beta <- c(0.5, 1, 3, 2, 5)
+col_vec <- viridis(5)
+par(mfrow = c(1, 2))
+# Plot the pdf
+plot(
+  x,
+  dbeta(x, alpha[1], beta[1]),
+  type = "l",
+  ylab = "PDF",
+  ylim = c(0, 3),
+  las = 1,
+  bty = "n",
+  col = col_vec[1]
+)
+for (i in 2:5) {
+  lines(x, dbeta(x, alpha[i], beta[i]), col = col_vec[i])
+}
+# Plot the cdf
+plot(
+  x,
+  pbeta(x, alpha[1], beta[1]),
+  type = "l",
+  ylab = "CDF",
+  las = 1,
+  bty = "n",
+  col = col_vec[1]
+)
+for (i in 2:5) {
+  lines(x, pbeta(x, alpha[i], beta[i]), col = col_vec[i])
+}
+# Generate the string for the legend
+leg <- rep(NA, 5)
+for (i in 1:5) {
+  leg[i] <-
+    as.expression(bquote(alpha == .(paste0(alpha[i])) ~ "and" ~
+    beta == .(paste(beta[i]))))
+}
+legend(
+  "topleft",
+  leg,
+  pch = 15,
+  col = col_vec,
+  cex = 0.65,
+  bty = "n"
+)
+
+```
+
+Now we want to approximate the means of the different beta distributions with the help of simulation. As we know from other distributions, we can draw from the distribution using `rbeta()`. Let's see what the expected value of the beta distribution is for the different combinations of alpha and beta.
+
+-   We write some code to produce a graph that shows us the mean values of different draws from the beta distribution.
+-   We use the same combinations from above.
+-   We add a legend and a line showing the mean of the distributions.
+-   **Based on the graph: Can you guess what the analytical solution for the expected value looks like?**
+
+```{r}
+res <- matrix(NA, nrow = 100, ncol = 5)
+
+alpha <- c(0.5, 5, 1, 2, 2)
+beta <- c(0.5, 1, 3, 2, 5)
+
+for (j in 1:5) {
+  for (i in 1:100) {
+    res[i, j] <- mean(rbeta(100, alpha[j], beta[j]))
+  }
+}
+
+# Plot the histograms of the mean (with some fancy colors)
+
+col_vec <- viridis(5)
+
+hist(
+  res[, 1],
+  xlim = c(0, 1),
+  ylim = c(0, 40),
+  main = "Expected Values of Beta Distributions",
+  xlab = "",
+  col = adjustcolor(col_vec[1], 0.5),
+  border = 0,
+  las = 1
+)
+for (i in 2:5) {
+  hist(res[, i],
+       col = adjustcolor(col_vec[i], 0.5),
+       add = TRUE,
+       border = 0)
+}
+for (i in 1:5) {
+  abline(v = mean(res[, i]),
+         lty = "dashed",
+         col = col_vec[i])
+}
+
+
+# Generate the string for the legend
+leg <- rep(NA, 5)
+for (i in 1:5) {
+  leg[i] <-
+    as.expression(bquote(alpha == .(paste0(alpha[i])) ~ "and" ~
+                           beta == .(paste(beta[i]))))
+}
+
+legend(
+  "topleft",
+  leg,
+  pch = 15,
+  col = col_vec,
+  cex = 0.65,
+  bty = "n"
+)
+```
+
+Analytical Solution for the mean of the beta-distribution:
+
+$$
+E[X] = \frac{\alpha}{\alpha + \beta}
+$$
